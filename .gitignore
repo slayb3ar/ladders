@@ -1,0 +1,8 @@
+.venv
+.ropeproject
+build/
+.DS_Store
+ladders.egg-info
+**/__pycache__/
+wip
+uv.lock
