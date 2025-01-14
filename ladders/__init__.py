@@ -319,6 +319,10 @@ class LaddersApp:
 
     def run(self, host='127.0.0.1', port=8080):
         uvicorn.run(self.app, host=host, port=port, loop="uvloop")
+
+    # Add this method to make the app ASGI-compliant
+    async def __call__(self, scope, receive, send):
+        await self.app(scope, receive, send)
 ##################################################################################
 # END MAIN APP
 #
