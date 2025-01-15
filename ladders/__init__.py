@@ -29,6 +29,7 @@ class LaddersSettings(BaseSettings):
 #
 #
 # START TEMPLATING PARSER
+import hashlib
 import re
 import sys
 from io import StringIO
@@ -39,36 +40,57 @@ class TemplateParser:
         self.template_dir = template_dir
         self._exec_pattern = re.compile(r'<%([\s\S]+?)%>')  # Inline Python execution
         self._eval_pattern = re.compile(r'%%([^}]+?)%%')   # Inline Python evaluation
-        self._block_pattern = re.compile(r'{%\s*block\s+(\w+)\s*%}([\s\S]*?){%\s*endblock\s*%}')  # Block pattern
-        self._include_pattern = re.compile(r'{%\s*include\s+["\']([\w\/\-\.]+)["\']\s*%}')  # Include pattern
-        self._extends_pattern = re.compile(r'{%\s*extends\s+["\']([\w\/\-\.]+)["\']\s*%}')  # Extends pattern
+        self._block_pattern = re.compile(r'{%\s*block\s+(\w+)\s*%}([\s\S]*?){%\s*endblock\s*%}')
+        self._include_pattern = re.compile(r'{%\s*include\s+["\']([\w\/\-\.]+)["\']\s*%}')
+        self._extends_pattern = re.compile(r'{%\s*extends\s+["\']([\w\/\-\.]+)["\']\s*%}')
+        self.cache = {}
 
     def render(self, template_name, context=None):
         if context is None:
             context = {}
 
-        # Step 1: Process the template
+        # Check if the template is cached and return it if present
+        cache_key = (template_name, frozenset(context.items()) if context else None)
+
+        # Load the template content from the file
         file_path = Path(f'{self.template_dir}/{template_name}')
         if not file_path.exists():
             raise FileNotFoundError(f"Template '{template_name}' not found.")
 
-        rendered_template = file_path.read_text(encoding='utf-8')
+        # Generate a hash of the template content
+        template_content = file_path.read_text(encoding='utf-8')
+        template_hash = self.hash_content(template_content)
 
-        # Step 2: Process template inheritance (if a base template exists)
-        rendered_template = self.process_inheritance(rendered_template, context)
+        # Check if the content of the template has changed (i.e., cache invalidation)
+        if cache_key in self.cache and self.cache[cache_key]['hash'] == template_hash:
+            return self.cache[cache_key]['content']
 
-        # Step 3: Process includes (e.g., footer, header)
+        # Step 1: Process template inheritance (if a base template exists)
+        rendered_template = self.process_inheritance(template_content, context)
+
+        # Step 2: Process includes (e.g., footer, header)
         rendered_template = self.process_includes(rendered_template, context)
 
-        # Step 4: Process inline Python code in the template content
+        # Step 3: Process inline Python code in the template content if needed
         rendered_template = self.execute_python(rendered_template, context)
 
+        # Cache the rendered template result along with the content hash
+        self.cache[cache_key] = {'content': rendered_template, 'hash': template_hash}
+
         return rendered_template
+
+    def hash_content(self, content):
+        """Generate a hash of the content to detect changes."""
+        return hashlib.sha256(content.encode('utf-8')).hexdigest()
 
     def execute_python(self, content, context):
         """
         Preprocess custom Python code blocks in the rendered template.
         """
+        # Check if there is any inline Python code to execute or evaluate
+        if not (self._exec_pattern.search(content) or self._eval_pattern.search(content)):
+            return content  # No need to process if there is no inline Python code
+
         buffer = context['buffer'] = StringIO()
         _exec_pattern, _eval_pattern = self._exec_pattern, self._eval_pattern
 
@@ -87,7 +109,7 @@ class TemplateParser:
             min_indent = min(len(line) - len(line.lstrip()) for line in lines if line.strip())
             code = '\n'.join(line[min_indent:] for line in lines)
 
-            # Execute or evaluate
+            # Execute or evaluate the code
             if is_exec:
                 _stdout, sys.stdout = sys.stdout, buffer
                 exec(code, context)
@@ -111,7 +133,7 @@ class TemplateParser:
         match = self._extends_pattern.search(content)
         if match:
             base_template_name = match.group(1)
-            # Load the base template
+            # Load the base template (recursively, it will also be cached)
             base_template = self.render(base_template_name, context)
             # Remove the extends statement from content
             content = re.sub(self._extends_pattern, '', content)
@@ -141,18 +163,15 @@ class TemplateParser:
         return blocks.items()
 
     def replace_default_blocks(self, base_template, child_blocks):
-       """
-       Ensures that any block not defined in the child template is replaced with empty content
-       or default content.
-       """
-       for match in self._block_pattern.finditer(base_template):
-           block_name = match.group(1)
-           if block_name not in child_blocks:
-               base_template = base_template.replace('{% block ' + block_name + ' %}', '')
-       return base_template
-
-    import re
-    from pathlib import Path
+        """
+        Ensures that any block not defined in the child template is replaced with empty content
+        or default content.
+        """
+        for match in self._block_pattern.finditer(base_template):
+            block_name = match.group(1)
+            if block_name not in child_blocks:
+                base_template = base_template.replace('{% block ' + block_name + ' %}', '')
+        return base_template
 
     def process_includes(self, content, context):
         """
@@ -177,13 +196,13 @@ class TemplateParser:
 
             if include_file_path.exists():
                 # Read the content of the included template
-                with open(include_file_path, 'r') as f:
-                    include_content = f.read()
+                include_content = include_file_path.read_text(encoding='utf-8')
                 # Replace the include tag with the content of the included template
                 content = content.replace(f'{{% include \'{include_template}\' %}}', include_content)
             else:
                 raise FileNotFoundError(f"Included template '{include_template}' not found.")
         return content
+
 ##################################################################################
 # END TEMPLATING PARSER
 
