@@ -1,6 +1,8 @@
 # LIBRARY CODE
 
 ##################################################################################
+#
+#
 # CONFIG SETTINGS
 import os
 from pydantic_settings import BaseSettings
@@ -19,12 +21,14 @@ class LaddersSettings(BaseSettings):
         env_file_encoding = 'utf-8'
 
 ##################################################################################
+#
+#
 # END CONFIG SETTINGS
 
-
-
 ##################################################################################
-# TEMPLATING PARSER
+#
+#
+# START TEMPLATING PARSER
 import re
 import sys
 from io import StringIO
@@ -180,66 +184,53 @@ class TemplateParser:
             else:
                 raise FileNotFoundError(f"Included template '{include_template}' not found.")
         return content
-
-
-
-
-
 ##################################################################################
 # END TEMPLATING PARSER
 
 ##################################################################################
-# MAIN APP
+# START MAIN APP
+#
+#
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
-from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, FileResponse
+from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from starlette.routing import Route
+from starlette.staticfiles import StaticFiles
 import uvicorn
-import mimetypes
 import os
 
 class LaddersApp:
     def __init__(self, settings=LaddersSettings()):
+        # Initialize the app with settings
         self.app = Starlette(debug=settings.DEBUG, routes=[])
         self.settings = settings
-        self._routes = {}
 
-    def _route_decorator(self, method):
-        def decorator(path, name=None):
-            def wrapper(func):
-                async def wrapper_with_params(request):
-                    try:
-                        return await func(request, **request.path_params)
-                    except TypeError as e:
-                        raise HTTPException(status_code=400, detail=str(e))
-
-                route = Route(path, wrapper_with_params, methods=[method.upper()], name=name)
-                self.app.routes.append(route)
-                if name:
-                    self._routes[name] = route
-                return func
-            return wrapper
-        return decorator
+        # Mount StaticFiles to handle static content
+        self.app.mount(self.settings.STATIC_URL, StaticFiles(directory=self.settings.STATIC_ROOT), name="static")
 
     def get(self, path, name=None):
-        return self._route_decorator('get')(path, name)
+        return Route(path, self._route_handler('get'), methods=["GET"], name=name)
 
     def post(self, path, name=None):
-        return self._route_decorator('post')(path, name)
+        return Route(path, self._route_handler('post'), methods=["POST"], name=name)
 
     def put(self, path, name=None):
-        return self._route_decorator('put')(path, name)
+        return Route(path, self._route_handler('put'), methods=["PUT"], name=name)
 
     def delete(self, path, name=None):
-        return self._route_decorator('delete')(path, name)
+        return Route(path, self._route_handler('delete'), methods=["DELETE"], name=name)
 
     def patch(self, path, name=None):
-        return self._route_decorator('patch')(path, name)
+        return Route(path, self._route_handler('patch'), methods=["PATCH"], name=name)
+
+    def _route_handler(self, method):
+        async def handler(request):
+            return f"Handled {method.upper()} request on {request.url.path}"
+        return handler
 
     def url_for(self, name, **path_params):
         try:
-            route = self._routes[name]
-            return route.url_path_for(name, **path_params)
+            return self.app.url_path_for(name, **path_params)
         except KeyError:
             raise HTTPException(status_code=404, detail=f"Route with name '{name}' not found")
 
@@ -254,8 +245,6 @@ class LaddersApp:
                 name=new_name
             )
             self.app.routes.append(new_route)
-            if new_name:
-                self._routes[new_name] = new_route
 
     def render(self, template_name, context=None, template_dir=None):
         if context is None:
@@ -276,34 +265,6 @@ class LaddersApp:
         else:
             return PlainTextResponse(content=str(content), status_code=status)
 
-    def send_from_directory(self, directory, filename, as_attachment=False):
-        """
-        Serves a file from the given directory.
-
-        Parameters:
-            directory (str): The directory where the file resides.
-            filename (str): The name of the file to serve.
-            as_attachment (bool): If True, the file will be served as an attachment.
-
-        Returns:
-            FileResponse: Response object serving the file.
-        """
-        # Build the full path to the file
-        file_path = os.path.join(directory, filename)
-
-        # Check if the file exists
-        if not os.path.isfile(file_path):
-            raise HTTPException(status_code=404, detail=f"File '{filename}' not found in directory '{directory}'")
-
-        # Detect the content type
-        mime_type, _ = mimetypes.guess_type(file_path)
-        headers = {}
-        if as_attachment:
-            headers['Content-Disposition'] = f'attachment; filename="{filename}"'
-
-        # Serve the file
-        return FileResponse(file_path, media_type=mime_type, headers=headers)
-
     def abort(self, status_code, detail=None):
         """
         Aborts the current request with a specific HTTP status code.
@@ -320,7 +281,6 @@ class LaddersApp:
     def run(self, host='127.0.0.1', port=8080):
         uvicorn.run(self.app, host=host, port=port, loop="uvloop")
 
-    # Add this method to make the app ASGI-compliant
     async def __call__(self, scope, receive, send):
         await self.app(scope, receive, send)
 ##################################################################################
